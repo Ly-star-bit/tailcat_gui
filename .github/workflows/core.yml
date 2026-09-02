@@ -1,0 +1,39 @@
+name: core
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: core/go.mod
+      - run: cd core && go vet ./... && go test ./...
+      - name: cross-compile check
+        run: |
+          cd core
+          GOOS=android GOARCH=arm64 CGO_ENABLED=0 go build ./engine/...
+          GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build ./engine/...
+          GOOS=darwin  GOARCH=arm64 CGO_ENABLED=0 go build ./engine/...
+
+  native-libs:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: core/go.mod
+      - run: brew install mingw-w64
+      - run: bash build/build_macos.sh
+      - run: bash build/build_windows.sh
+      - run: bash build/build_android.sh
+        env:
+          ANDROID_NDK_HOME: ${{ env.ANDROID_NDK_LATEST_HOME }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: native-libs
+          path: build/out

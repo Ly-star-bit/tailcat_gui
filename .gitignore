@@ -1,0 +1,25 @@
+# Go
+core/out/
+build/out/
+*.test
+*.h.gen
+
+# Flutter / Dart
+app/.dart_tool/
+app/.packages
+app/build/
+app/.flutter-plugins
+app/.flutter-plugins-dependencies
+app/**/.dart_tool/
+app/**/build/
+app/packages/tailcat_core_ffi/android/src/main/jniLibs/
+app/packages/tailcat_core_ffi/macos/Libraries/
+app/packages/tailcat_core_ffi/windows/lib/
+app/macos/Pods/
+app/macos/Podfile.lock
+
+# IDE / OS
+.idea/
+.vscode/
+*.iml
+.DS_Store

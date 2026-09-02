@@ -1,0 +1,15 @@
+# Optional: regenerate lib/src/bindings.dart from the C header with
+#   dart run ffigen --config ffigen.yaml
+# The checked-in bindings are hand-written for the six-function ABI, so this
+# is only needed if bridge.h grows.
+name: TailcatCoreBindings
+description: Bindings for src/bridge.h (Tailcat GUI core C ABI).
+output: 'lib/src/bindings.generated.dart'
+headers:
+  entry-points:
+    - 'src/bridge.h'
+  include-directives:
+    - 'src/bridge.h'
+comments:
+  style: any
+  length: full

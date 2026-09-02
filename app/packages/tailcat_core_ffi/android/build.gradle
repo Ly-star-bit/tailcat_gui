@@ -1,0 +1,54 @@
+// Packages the prebuilt libtailcat_core.so (built by build/build_android.sh
+// and copied into src/main/jniLibs/<abi>/ by build/sync_libs.sh).
+// No NDK build happens here.
+
+group = "dev.tailcat.tailcat_core_ffi"
+version = "1.0"
+
+buildscript {
+    repositories {
+        google()
+        mavenCentral()
+    }
+
+    dependencies {
+        classpath("com.android.tools.build:gradle:9.1.0")
+    }
+}
+
+rootProject.allprojects {
+    repositories {
+        google()
+        mavenCentral()
+    }
+}
+
+apply plugin: "com.android.library"
+
+android {
+    namespace = "dev.tailcat.tailcat_core_ffi"
+    compileSdk = 36
+
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
+
+    defaultConfig {
+        minSdk = 24
+    }
+
+    sourceSets {
+        main {
+            jniLibs.srcDirs = ["src/main/jniLibs"]
+        }
+    }
+
+    packagingOptions {
+        // The Go runtime has its own signal handling; keep the library unstripped
+        // of nothing special, but do not let Gradle try to re-strip it.
+        jniLibs {
+            keepDebugSymbols += ["**/libtailcat_core.so"]
+        }
+    }
+}

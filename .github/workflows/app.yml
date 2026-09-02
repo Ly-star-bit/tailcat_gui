@@ -1,0 +1,94 @@
+name: app
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  native-libs:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: core/go.mod
+      - run: brew install mingw-w64
+      - run: bash build/build_macos.sh && bash build/build_windows.sh && bash build/build_android.sh
+        env:
+          ANDROID_NDK_HOME: ${{ env.ANDROID_NDK_LATEST_HOME }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: native-libs
+          path: build/out
+
+  analyze-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+      - run: cd app && flutter pub get && flutter analyze && flutter test
+
+  android:
+    needs: native-libs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: native-libs
+          path: build/out
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+      - run: bash build/sync_libs.sh
+      - run: cd app && flutter pub get && flutter build apk --release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tailcat-android
+          path: app/build/app/outputs/flutter-apk/*.apk
+
+  macos:
+    needs: native-libs
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: native-libs
+          path: build/out
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+      - run: bash build/sync_libs.sh
+      - run: cd app && flutter pub get && flutter build macos --release
+      - run: cd app/build/macos/Build/Products/Release && ditto -c -k --keepParent tailcat_gui.app tailcat-macos.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tailcat-macos
+          path: app/build/macos/Build/Products/Release/tailcat-macos.zip
+
+  windows:
+    needs: native-libs
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: native-libs
+          path: build/out
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+      - run: bash build/sync_libs.sh
+        shell: bash
+      - run: cd app && flutter pub get && flutter build windows --release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tailcat-windows
+          path: app/build/windows/x64/runner/Release
