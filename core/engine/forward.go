@@ -52,9 +52,12 @@ func (e *Engine) startForward(a StartForwardArgs, kind Kind) (any, error) {
 	s.setInfo("listen", ln.Addr().String())
 
 	go acceptLoop(s, ln, func(c net.Conn) {
-		rc, err := cl.DialTCPPort(s.Context(), uint16(a.RemotePort))
+		rc, err := dialPeerPort(s, cl, uint16(a.RemotePort))
 		if err != nil {
-			s.logf("dial remote port %d: %v", a.RemotePort, err)
+			s.events.Push(Event{
+				"type": EvError, "session_id": s.ID, "code": "dial_failed",
+				"message": err.Error(),
+			})
 			c.Close()
 			return
 		}
@@ -83,6 +86,31 @@ func sshCommand(localPort int) string {
 		devnull = "NUL"
 	}
 	return fmt.Sprintf("ssh -p %d -o StrictHostKeyChecking=no -o UserKnownHostsFile=%s -o LogLevel=ERROR tailcat@127.0.0.1", localPort, devnull)
+}
+
+// dialPeerPort opens a connection to the peer's port for one accepted local
+// connection. It waits for the tunnel handshake first: a caller that connects
+// the instant the listener is bound would otherwise race the handshake, and a
+// failed dial looks to them like the peer hung up.
+func dialPeerPort(s *Session, cl *tailcat.Client, port uint16) (net.Conn, error) {
+	if err := s.waitReady(45 * time.Second); err != nil {
+		return nil, fmt.Errorf("connect to peer: %w", err)
+	}
+	var last error
+	for attempt := 1; attempt <= 3; attempt++ {
+		ctx, cancel := context.WithTimeout(s.Context(), 20*time.Second)
+		rc, err := cl.DialTCPPort(ctx, port)
+		cancel()
+		if err == nil {
+			return rc, nil
+		}
+		last = err
+		if s.Context().Err() != nil {
+			return nil, s.Context().Err()
+		}
+		s.logf("dial peer port %d (attempt %d): %v", port, attempt, err)
+	}
+	return nil, fmt.Errorf("peer port %d is not reachable: %w", port, last)
 }
 
 // acceptLoop serves ln until the session stops.
@@ -118,6 +146,7 @@ func clientWarmup(s *Session, cl *tailcat.Client) {
 		s.fail(fmt.Errorf("connect to server: %w", err))
 		return
 	}
+	s.markReady()
 	via, detail := classifyPing(pr.Endpoint, pr.DERPRegionCode, int(pr.DERPRegionID))
 	s.setState(StateRunning, "connected via "+detail)
 	s.events.Push(Event{"type": EvPath, "session_id": s.ID, "via": via, "detail": detail,

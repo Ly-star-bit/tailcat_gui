@@ -5,6 +5,7 @@ import (
 	"net"
 	"net/netip"
 	"strconv"
+	"time"
 
 	"tailscale.com/net/socks5"
 )
@@ -45,6 +46,11 @@ func (e *Engine) startSocks(a StartSocksArgs) (any, error) {
 	srv := &socks5.Server{
 		Logf: s.tailcatLogf(),
 		Dialer: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			// Do not race the tunnel handshake; a browser can hit the proxy
+			// the moment the port is open.
+			if err := s.waitReady(45 * time.Second); err != nil {
+				return nil, err
+			}
 			host, portStr, err := net.SplitHostPort(addr)
 			if err != nil {
 				return nil, err

@@ -41,6 +41,11 @@ type Session struct {
 	cancel context.CancelFunc
 	events *EventQueue
 
+	// ready is closed once the tunnel handshake with the peer succeeded,
+	// so connection handlers do not dial before the client is usable.
+	ready     chan struct{}
+	readyOnce sync.Once
+
 	mu      sync.Mutex
 	state   State
 	token   string
@@ -56,6 +61,7 @@ func newSession(parent context.Context, id string, kind Kind, q *EventQueue) *Se
 		ID:      id,
 		Kind:    kind,
 		Created: time.Now(),
+		ready:   make(chan struct{}),
 		ctx:     ctx,
 		cancel:  cancel,
 		events:  q,
@@ -66,6 +72,23 @@ func newSession(parent context.Context, id string, kind Kind, q *EventQueue) *Se
 
 // Context is cancelled when the session is stopped.
 func (s *Session) Context() context.Context { return s.ctx }
+
+// markReady reports that the tunnel is up and dialling can proceed.
+func (s *Session) markReady() {
+	s.readyOnce.Do(func() { close(s.ready) })
+}
+
+// waitReady blocks until the tunnel is up, the session stops, or timeout.
+func (s *Session) waitReady(timeout time.Duration) error {
+	select {
+	case <-s.ready:
+		return nil
+	case <-s.ctx.Done():
+		return s.ctx.Err()
+	case <-time.After(timeout):
+		return fmt.Errorf("timed out waiting for the tunnel to come up")
+	}
+}
 
 // addCloser registers something to close when the session stops.
 func (s *Session) addCloser(c io.Closer) {

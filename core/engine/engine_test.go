@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	gossh "golang.org/x/crypto/ssh"
 	"golang.org/x/net/proxy"
 )
 
@@ -343,4 +344,59 @@ func httpGet(t *testing.T, url string, tr *http.Transport) string {
 	defer resp.Body.Close()
 	b, _ := io.ReadAll(resp.Body)
 	return string(b)
+}
+
+// TestE2ESSHShell exercises the whole SSH path the phone uses: a server with
+// the no-auth shell enabled, a local port forwarded to its port 22, and an
+// SSH client dialling that local port.
+func TestE2ESSHShell(t *testing.T) {
+	e := e2e(t)
+	if !sshShellSupported() {
+		t.Skip("no SSH server on this platform")
+	}
+	srv := mustOK(t, e, "start_server", StartServerArgs{SSH: true})
+	token := waitToken(t, e, srv["session_id"].(string))
+
+	probe := mustOK(t, e, "probe", TokenArgs{Token: token})
+	if probe["ssh_shell"] != true {
+		t.Fatalf("probe says no ssh shell: %v", probe)
+	}
+
+	fw := mustOK(t, e, "start_ssh_forward", TokenArgs{Token: token})
+	addr := fmt.Sprintf("127.0.0.1:%d", int(fw["local_port"].(float64)))
+	t.Logf("ssh forward at %s", addr)
+
+	conn, err := net.DialTimeout("tcp", addr, 30*time.Second)
+	if err != nil {
+		t.Fatalf("dial forward: %v", err)
+	}
+	defer conn.Close()
+	sc, chans, reqs, err := gossh.NewClientConn(conn, "tailcat", &gossh.ClientConfig{
+		User:            "tailcat",
+		HostKeyCallback: gossh.InsecureIgnoreHostKey(),
+		Timeout:         30 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("ssh handshake through the forward: %v", err)
+	}
+	cl := gossh.NewClient(sc, chans, reqs)
+	defer cl.Close()
+
+	sess, err := cl.NewSession()
+	if err != nil {
+		t.Fatalf("new session: %v", err)
+	}
+	defer sess.Close()
+	if err := sess.RequestPty("xterm-256color", 25, 80, gossh.TerminalModes{}); err != nil {
+		t.Fatalf("request pty: %v", err)
+	}
+	out, err := sess.Output("echo hello-from-tailcat")
+	if err != nil {
+		t.Fatalf("run command: %v", err)
+	}
+	if !strings.Contains(string(out), "hello-from-tailcat") {
+		t.Fatalf("shell output = %q", out)
+	}
+	mustOK(t, e, "stop", SessionArgs{SessionID: fw["session_id"].(string)})
+	mustOK(t, e, "stop", SessionArgs{SessionID: srv["session_id"].(string)})
 }

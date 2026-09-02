@@ -7,6 +7,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:xterm/xterm.dart';
 
 import '../core/engine.dart';
+import '../core/models.dart';
 import '../core/providers.dart';
 import '../util/errors.dart';
 
@@ -40,6 +41,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
 
   SSHClient? _client;
   SSHSession? _session;
+  StreamSubscription<EngineEvent>? _engineEvents;
   String _title = '';
   String? _error;
   bool _connected = false;
@@ -50,6 +52,16 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
     super.initState();
     // ref is unusable from dispose(), so keep the engine we need to stop with.
     _engine = ref.read(engineProvider);
+    // The tunnel lives in the engine, so its errors explain far more than
+    // "connection closed" ever could. Show them inside the terminal.
+    _engineEvents = _engine.events.listen((ev) {
+      if (ev.sessionId != widget.sessionId) return;
+      if (ev is ErrorEvent) {
+        _terminal.write('\r\n\x1b[31m${friendlyError(EngineException(ev.code, ev.message))}\x1b[0m\r\n');
+      } else if (ev is LogEvent && ev.level != 'debug') {
+        _terminal.write('\x1b[90m${ev.msg}\x1b[0m\r\n');
+      }
+    });
     _title = widget.title;
     _connect();
   }
@@ -106,6 +118,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
 
   @override
   void dispose() {
+    _engineEvents?.cancel();
     _session?.close();
     _client?.close();
     // The forward exists only for this terminal; free the local port.
