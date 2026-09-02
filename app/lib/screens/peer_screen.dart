@@ -11,6 +11,7 @@ import '../util/errors.dart';
 import '../util/format.dart';
 import 'browse_screen.dart';
 import 'client_session_screen.dart';
+import 'terminal_screen.dart';
 
 /// What the other side offers, as actions. Built from a [ProbeResult].
 class PeerScreen extends ConsumerStatefulWidget {
@@ -104,7 +105,20 @@ class _PeerScreenState extends ConsumerState<PeerScreen> {
         if (mounted) _open(ClientSessionScreen(sessionId: res['session_id'] as String, title: 'SOCKS5 代理'));
       });
 
+  /// Opens the built-in terminal (all platforms).
   Future<void> _ssh() => _run('ssh', () async {
+        final res = await ref.read(engineProvider).call('start_ssh_forward', {'token': widget.token});
+        if (mounted) {
+          _open(TerminalScreen(
+            sessionId: res['session_id'] as String,
+            localPort: (res['local_port'] as num).toInt(),
+            title: p.displayName,
+          ));
+        }
+      });
+
+  /// Desktop escape hatch: hand the command to the system terminal instead.
+  Future<void> _sshExternal() => _run('ssh-ext', () async {
         final res = await ref.read(engineProvider).call('start_ssh_forward', {'token': widget.token});
         final cmd = res['command'] as String;
         await openTerminalWith(cmd);
@@ -256,17 +270,23 @@ class _PeerScreenState extends ConsumerState<PeerScreen> {
             ),
 
           // ---- ssh ----
-          if (p.canSsh && PlatformCaps.hasSystemSsh)
+          if (p.canSsh)
             _ActionCard(
               icon: Icons.terminal,
               title: '对方允许 SSH 登录',
-              body: Text('用系统终端打开一个免密 SSH 会话。', style: theme.textTheme.bodySmall),
+              body: Text('在应用内打开一个免密 SSH 终端。', style: theme.textTheme.bodySmall),
               actions: [
                 FilledButton.icon(
                   icon: _spinnerOr('ssh', Icons.terminal),
-                  label: const Text('SSH 登录'),
+                  label: const Text('打开终端'),
                   onPressed: _busyAction == null ? _ssh : null,
                 ),
+                if (PlatformCaps.hasSystemSsh)
+                  OutlinedButton.icon(
+                    icon: _spinnerOr('ssh-ext', Icons.open_in_new),
+                    label: const Text('用系统终端'),
+                    onPressed: _busyAction == null ? _sshExternal : null,
+                  ),
               ],
             ),
 

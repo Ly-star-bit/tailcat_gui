@@ -28,6 +28,8 @@ Flutter UI (Dart)  ──dart:ffi──▶  libtailcat_core (Go, c-shared)  ─�
 - `app/packages/tailcat_core_ffi`：Flutter FFI 插件，打包预编译的 `.so/.dylib/.dll`。
 - `app/`：Flutter 应用（Riverpod）。只有两个入口：**分享**（勾选文件/文件夹/端口/出口节点/SSH，生成一个令牌）
   和 **连接**（粘贴或扫描令牌，自动显示对方提供了什么并给出操作）。剪贴板里有令牌会直接提示连接；记住最近连接过的设备。
+  内置 SSH 终端（xterm.dart + dartssh2，均为 MIT），三端可用，手机上带 Esc/Tab/Ctrl/方向键辅助键条；
+  桌面端也保留「用系统终端」这个选项。
 
 ## 构建（全部 headless，不会启动 GUI）
 
@@ -63,7 +65,7 @@ macOS 应用打包需要完整 Xcode（`flutter build macos`）；Windows 应用
 | 连接 → 全部接收 / 浏览 | `tailcat cp tc…:. .` / `tailcat ls -l tc…` |
 | 连接 → 映射端口到本机 | 无 CLI 等价（CLI 只有 stdin/stdout 管道） |
 | 连接 → SOCKS5 | `tailcat socks --listen 1080 tc…` |
-| 连接 → SSH 登录（桌面） | `tailcat ssh tc…` |
+| 连接 → 打开终端（三端） | `tailcat ssh tc…` |
 
 连接命令行起的服务端时没有清单，App 会探测 22 端口并允许手动填端口号映射。
 
@@ -71,5 +73,5 @@ macOS 应用打包需要完整 Xcode（`flutter build macos`）；Windows 应用
 
 - tailcat 无 API/wire 稳定承诺：两端应使用相同版本（首页底部显示 core 与 tailcat 版本）。
 - Android 上应用需保持前台，v1 未做前台服务。
-- 免密 SSH 谁拿到令牌谁就能登录，仅用于临时调试。
+- 免密 SSH 谁拿到令牌谁就能登录，仅用于临时调试。Android 只能当 SSH 客户端，当不了服务端（tailcat 的平台限制）。
 - Windows 首次监听端口会弹防火墙提示；`ssh.exe` 使用系统自带 OpenSSH。

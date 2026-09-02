@@ -43,6 +43,8 @@ dependencies:
   tailcat_core_ffi:
     path: packages/tailcat_core_ffi
   shared_preferences: ^2.5.5
+  xterm: ^4.0.0
+  dartssh2: ^4.0.0
 
 dev_dependencies:
   flutter_test:

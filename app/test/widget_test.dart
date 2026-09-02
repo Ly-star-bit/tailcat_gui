@@ -11,6 +11,8 @@ import 'package:tailcat_gui/screens/home_screen.dart';
 import 'package:tailcat_gui/screens/peer_screen.dart';
 import 'package:tailcat_gui/screens/server_screen.dart';
 import 'package:tailcat_gui/screens/share_screen.dart';
+import 'package:tailcat_gui/screens/terminal_screen.dart';
+import 'package:xterm/xterm.dart';
 
 import 'fake_backend.dart';
 
@@ -104,7 +106,7 @@ void main() {
     expect(find.text('全部接收'), findsOneWidget);
     expect(find.text('端口 8080'), findsOneWidget);
     expect(find.text('开启 SOCKS5 代理'), findsOneWidget);
-    expect(find.text('SSH 登录'), findsNothing);
+    expect(find.text('打开终端'), findsNothing); // peer did not offer SSH
     engine.dispose();
   });
 
@@ -135,6 +137,40 @@ void main() {
     expect(fw['args']['remote_port'], 8080);
     expect(find.byType(ClientSessionScreen), findsOneWidget);
     engine.dispose();
+  });
+
+  testWidgets('peer screen offers the in-app terminal when the peer allows SSH', (tester) async {
+    tallViewport(tester);
+    final (_, engine) = await startEngine();
+    final probe = ProbeResult.fromJson(const {
+      'reachable': true, 'via': 'direct', 'detail': '1.2.3.4:41641', 'latency_ms': 3.0,
+      'manifest': {'app': 'tailcat-gui', 'name': 'box', 'platform': 'linux', 'ssh': true},
+      'sftp': true, 'sftp_list': false, 'ssh_shell': true, 'cli_fallback': false,
+    });
+    await tester.pumpWidget(app(engine, PeerScreen(token: 'tcX', probe: probe)));
+    await tester.pumpAndSettle();
+    expect(find.text('对方允许 SSH 登录'), findsOneWidget);
+    // Available on every platform, including Android, via the built-in terminal.
+    expect(find.text('打开终端'), findsOneWidget);
+    engine.dispose();
+  });
+
+  test('sticky Ctrl turns the next key into a control sequence', () {
+    final keys = TerminalStickyModifiers(defaultInputHandler);
+    final terminal = Terminal(inputHandler: keys);
+    final out = <String>[];
+    terminal.onOutput = out.add;
+
+    terminal.keyInput(TerminalKey.keyC);
+    expect(out, isEmpty, reason: 'a bare letter is echoed by the OS keyboard, not the handler');
+
+    keys.ctrl = true;
+    terminal.keyInput(TerminalKey.keyC);
+    expect(out, ['\x03'], reason: 'Ctrl-C');
+    expect(keys.ctrl, isFalse, reason: 'the modifier is one-shot');
+
+    terminal.keyInput(TerminalKey.keyC);
+    expect(out, ['\x03'], reason: 'and does not stick around');
   });
 
   testWidgets('peer screen for a CLI drop box offers sending and manual ports', (tester) async {
