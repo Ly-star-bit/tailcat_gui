@@ -14,6 +14,17 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
 
+    // Only ship ABIs that have libtailcat_core.so. Default arm64 only;
+    // for an x86_64 emulator: flutter build apk -PtailcatAbis=arm64-v8a,x86_64
+    val tailcatAbis = (project.findProperty("tailcatAbis") as String?)?.split(",") ?: listOf("arm64-v8a")
+    packaging {
+        jniLibs {
+            excludes += listOf("arm64-v8a", "armeabi-v7a", "x86_64", "x86")
+                .filter { it !in tailcatAbis }
+                .map { "lib/$it/**" }
+        }
+    }
+
     defaultConfig {
         // TODO: Specify your own unique Application ID (https://developer.android.com/studio/build/application-id.html).
         applicationId = "dev.tailcat.tailcat_gui"
