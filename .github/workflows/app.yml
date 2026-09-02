@@ -25,10 +25,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: core/go.mod
       - uses: subosito/flutter-action@v2
         with:
           channel: stable
       - run: cd app && flutter pub get && flutter analyze && flutter test
+      # dartssh2 must keep using SSH's "none" method against our servers.
+      - run: make ssh-auth-test
 
   android:
     needs: native-libs

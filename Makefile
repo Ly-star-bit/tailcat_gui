@@ -2,7 +2,7 @@
 SHELL := /bin/bash
 export PATH := /opt/homebrew/bin:$(PATH)
 
-.PHONY: all core-test core-e2e core-cross macos android windows sync app-analyze app-test apk clean
+.PHONY: all core-test core-e2e core-cross macos android windows sync app-analyze app-test ssh-auth-test apk clean
 
 all: core-test macos sync
 
@@ -35,6 +35,10 @@ app-analyze:
 
 app-test:
 	cd app && flutter test
+
+ssh-auth-test:      ## dartssh2 against a real no-auth SSH server
+	cd core && go build -o "$(CURDIR)/build/out/sshprobe" ./cmd/sshprobe
+	cd app && TAILCAT_SSHPROBE_BIN="$(CURDIR)/build/out/sshprobe" flutter test test/ssh_auth_test.dart
 
 apk: android sync    ## debug APK, build only (never runs the app)
 	cd app && flutter build apk --debug --target-platform android-arm64

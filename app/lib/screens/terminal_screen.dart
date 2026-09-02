@@ -74,9 +74,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
         widget.localPort,
         timeout: const Duration(seconds: 30),
       );
-      // The tunnel already proved who the peer is; tailcat's SSH server
-      // accepts the "none" method, so no credentials are exchanged.
-      final client = SSHClient(socket, username: 'tailcat', onPasswordRequest: () => '');
+      // The tunnel already proved who the peer is and the server accepts
+      // SSH's "none" method. Passing a password callback would make
+      // dartssh2 skip "none" and try password auth, which the server does
+      // not offer, so it closes the connection before authentication.
+      final client = SSHClient(socket, username: 'tailcat');
       _client = client;
 
       final session = await client.shell(
