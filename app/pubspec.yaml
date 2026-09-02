@@ -42,6 +42,7 @@ dependencies:
   mobile_scanner: ^7.4.0
   tailcat_core_ffi:
     path: packages/tailcat_core_ffi
+  shared_preferences: ^2.5.5
 
 dev_dependencies:
   flutter_test:

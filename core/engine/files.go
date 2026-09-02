@@ -3,7 +3,6 @@ package engine
 import (
 	"context"
 	"fmt"
-	"net"
 	"os"
 	"sync"
 	"time"
@@ -43,19 +42,13 @@ func (s *Session) progressEmitter() func(fileshare.Progress) {
 // openShare dials the server's SFTP port and opens a file client.
 func (e *Engine) openShare(ctx context.Context, s *Session, cb tailcat.ConnBlob) (*tailcat.Client, *fileshare.Client, error) {
 	cl := e.newClient(s, cb)
-	// A server that has only just registered with its relay can miss the
-	// first SYN; retry a few times before giving up.
-	var conn net.Conn
-	var err error
-	for attempt := 1; attempt <= 3; attempt++ {
-		dctx, cancel := context.WithTimeout(ctx, 15*time.Second)
-		conn, err = cl.DialTCPPort(dctx, sftpPort)
-		cancel()
-		if err == nil || ctx.Err() != nil {
-			break
-		}
-		s.logf("connect to file service (attempt %d): %v", attempt, err)
+	if err := warmClient(ctx, cl, s.logf); err != nil {
+		cl.Close()
+		return nil, nil, err
 	}
+	dctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	conn, err := cl.DialTCPPort(dctx, sftpPort)
+	cancel()
 	if err != nil {
 		cl.Close()
 		return nil, nil, fmt.Errorf("connect to file service: %w", err)

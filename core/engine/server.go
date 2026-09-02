@@ -5,6 +5,8 @@ import (
 	"net"
 	"net/netip"
 	"os"
+	"path/filepath"
+	"runtime"
 	"slices"
 	"strconv"
 
@@ -19,8 +21,16 @@ const sftpPort = 22
 
 // startServer implements `tailcat serve` semantics in-process.
 func (e *Engine) startServer(a StartServerArgs) (any, error) {
-	if len(a.Ports) == 0 && !a.All && !a.ExitNode && a.Files == nil && !a.SSH {
-		return nil, errCode(CodeBadRequest, "nothing to serve: give ports, all, exit_node, files or ssh")
+	if len(a.Ports) == 0 && !a.All && !a.ExitNode && a.Files == nil && !a.SSH && len(a.SharePaths) == 0 {
+		return nil, errCode(CodeBadRequest, "nothing to serve: give ports, all, exit_node, files, share_paths or ssh")
+	}
+	if a.Files != nil && len(a.SharePaths) > 0 {
+		return nil, errCode(CodeBadRequest, "files and share_paths are mutually exclusive")
+	}
+	for _, p := range a.SharePaths {
+		if _, err := os.Stat(p); err != nil {
+			return nil, errCode(CodeBadRequest, "share path: %v", err)
+		}
 	}
 	for _, p := range a.Ports {
 		if p < 1 || p > 65535 {
@@ -60,30 +70,51 @@ func (e *Engine) startServer(a StartServerArgs) (any, error) {
 	// Port 22 handler: either tailcat's shell+sftp server (desktop) or our
 	// SFTP-only share (all platforms).
 	var port22 func(net.Conn)
-	if a.SSH {
+	var mfFiles *ManifestFiles
+	hooks := fileshare.Hooks{OnProgress: s.progressEmitter(), Logf: s.logf}
+	switch {
+	case a.SSH:
 		port22, err = sshShellHandler(srv, a.Files)
 		if err != nil {
 			s.fail(err)
 			return nil, err
 		}
-	} else if a.Files != nil {
-		fs, err := fileshare.NewServer(a.Files.Dir, fsMode, fileshare.Hooks{
-			OnProgress: s.progressEmitter(),
-			Logf:       s.logf,
-		})
+		if a.Files != nil {
+			mfFiles = &ManifestFiles{Mode: fsMode.String(), Dir: filepath.Base(a.Files.Dir)}
+		}
+	case len(a.SharePaths) > 0:
+		fs, err := fileshare.NewPathsServer(a.SharePaths, hooks)
 		if err != nil {
 			s.fail(err)
 			return nil, errCode(CodeInternal, "file share: %v", err)
 		}
 		s.addCloser(fs)
 		port22 = fs.Handler()
+		fsMode = fileshare.ReadOnly
+		mfFiles = &ManifestFiles{Mode: "ro", Items: fs.Entries()}
+	case a.Files != nil:
+		fs, err := fileshare.NewServer(a.Files.Dir, fsMode, hooks)
+		if err != nil {
+			s.fail(err)
+			return nil, errCode(CodeInternal, "file share: %v", err)
+		}
+		s.addCloser(fs)
+		port22 = fs.Handler()
+		mfFiles = &ManifestFiles{Mode: fsMode.String(), Dir: filepath.Base(a.Files.Dir)}
 	}
 
 	portSet := make(map[uint16]bool, len(a.Ports))
 	for _, p := range a.Ports {
 		portSet[uint16(p)] = true
 	}
+	manifest := manifestHandler(Manifest{
+		App: manifestApp, Version: Version, Name: deviceName(a.Name), Platform: runtime.GOOS,
+		Ports: a.Ports, All: a.All, ExitNode: a.ExitNode, SSH: a.SSH, Files: mfFiles,
+	})
 	srv.OnTCP = func(port uint16) func(net.Conn) {
+		if port == manifestPort && !portSet[manifestPort] {
+			return manifest
+		}
 		if port == sftpPort && port22 != nil {
 			return port22
 		}
@@ -94,6 +125,7 @@ func (e *Engine) startServer(a StartServerArgs) (any, error) {
 	}
 	if !a.All {
 		ports := slices.Clone(a.Ports)
+		ports = append(ports, manifestPort)
 		if port22 != nil {
 			ports = append(ports, sftpPort)
 		}
@@ -112,9 +144,14 @@ func (e *Engine) startServer(a StartServerArgs) (any, error) {
 	s.setInfo("all", a.All)
 	s.setInfo("exit_node", a.ExitNode)
 	s.setInfo("ssh", a.SSH)
+	s.setInfo("name", deviceName(a.Name))
 	if a.Files != nil {
 		s.setInfo("files_dir", a.Files.Dir)
 		s.setInfo("files_mode", fsMode.String())
+	}
+	if len(a.SharePaths) > 0 {
+		s.setInfo("share_paths", a.SharePaths)
+		s.setInfo("files_mode", "ro")
 	}
 
 	go func() {

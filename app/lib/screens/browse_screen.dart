@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:path_provider/path_provider.dart';
 
 import '../core/models.dart';
+import '../util/errors.dart';
 import '../core/providers.dart';
 import '../util/format.dart';
 import '../widgets/token_field.dart';
@@ -11,7 +12,10 @@ import 'client_session_screen.dart';
 
 /// Lists a remote share and downloads selected entries.
 class BrowseScreen extends ConsumerStatefulWidget {
-  const BrowseScreen({super.key});
+  const BrowseScreen({super.key, this.initialToken});
+
+  /// When given, the token field is prefilled and the root is listed at once.
+  final String? initialToken;
 
   @override
   ConsumerState<BrowseScreen> createState() => _BrowseScreenState();
@@ -19,12 +23,20 @@ class BrowseScreen extends ConsumerStatefulWidget {
 
 class _BrowseScreenState extends ConsumerState<BrowseScreen> {
   final _form = GlobalKey<FormState>();
-  final _token = TextEditingController();
+  late final _token = TextEditingController(text: widget.initialToken ?? '');
   String _dir = '.';
   List<RemoteEntry>? _entries;
   final _selected = <String>{};
   bool _busy = false;
   String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    if ((widget.initialToken ?? '').isNotEmpty) {
+      WidgetsBinding.instance.addPostFrameCallback((_) => _list('.'));
+    }
+  }
 
   Future<void> _list([String? dir]) async {
     if (!_form.currentState!.validate()) return;
@@ -41,8 +53,8 @@ class _BrowseScreenState extends ConsumerState<BrowseScreen> {
           ..sort((a, b) => a.isDir == b.isDir ? a.name.compareTo(b.name) : (a.isDir ? -1 : 1));
         _selected.clear();
       });
-    } on EngineException catch (e) {
-      setState(() => _error = e.message);
+    } catch (e) {
+      setState(() => _error = friendlyError(e));
     } finally {
       if (mounted) setState(() => _busy = false);
     }
@@ -62,8 +74,8 @@ class _BrowseScreenState extends ConsumerState<BrowseScreen> {
       Navigator.of(context).push(MaterialPageRoute(
         builder: (_) => ClientSessionScreen(sessionId: res['session_id'] as String, title: '下载'),
       ));
-    } on EngineException catch (e) {
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.message)));
+    } catch (e) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(friendlyError(e))));
     }
   }
 
@@ -80,7 +92,7 @@ class _BrowseScreenState extends ConsumerState<BrowseScreen> {
               padding: const EdgeInsets.all(16),
               child: Column(
                 children: [
-                  TokenField(controller: _token, autofocus: true),
+                  TokenField(controller: _token, autofocus: widget.initialToken == null),
                   const SizedBox(height: 12),
                   FilledButton.icon(
                     style: FilledButton.styleFrom(minimumSize: const Size.fromHeight(48)),

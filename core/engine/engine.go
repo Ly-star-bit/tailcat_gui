@@ -279,6 +279,9 @@ func (e *Engine) ping(a TokenArgs) (any, error) {
 	}
 	defer cl.Close()
 	start := time.Now()
+	if err := warmClient(ctx, cl, nil); err != nil {
+		return nil, errCode(CodeInternal, "ping: %v", err)
+	}
 	pr, err := cl.DiscoPing(ctx)
 	if err != nil {
 		return nil, errCode(CodeInternal, "ping: %v", err)

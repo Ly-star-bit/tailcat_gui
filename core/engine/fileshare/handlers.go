@@ -1,8 +1,8 @@
 package fileshare
 
 import (
+	"errors"
 	"io"
-	"io/fs"
 	"os"
 	"path"
 	"strings"
@@ -42,7 +42,7 @@ func (h *shareHandlers) Fileread(r *sftp.Request) (io.ReaderAt, error) {
 	if !h.canRead() {
 		return nil, sftp.ErrSSHFxPermissionDenied
 	}
-	f, err := h.s.root.Open(rel(r.Filepath))
+	f, err := h.s.fs.Open(rel(r.Filepath))
 	if err != nil {
 		return nil, mapErr(err)
 	}
@@ -79,7 +79,7 @@ func (h *shareHandlers) Filewrite(r *sftp.Request) (io.WriterAt, error) {
 	if flags.Append {
 		oflag |= os.O_APPEND
 	}
-	f, err := h.s.root.OpenFile(rel(r.Filepath), oflag, 0o644)
+	f, err := h.s.fs.OpenFile(rel(r.Filepath), oflag, 0o644)
 	if err != nil {
 		return nil, mapErr(err)
 	}
@@ -100,7 +100,7 @@ func (h *shareHandlers) OpenFile(r *sftp.Request) (sftp.WriterAtReaderAt, error)
 	if flags.Trunc {
 		oflag |= os.O_TRUNC
 	}
-	f, err := h.s.root.OpenFile(rel(r.Filepath), oflag, 0o644)
+	f, err := h.s.fs.OpenFile(rel(r.Filepath), oflag, 0o644)
 	if err != nil {
 		return nil, mapErr(err)
 	}
@@ -112,7 +112,7 @@ func (h *shareHandlers) Filecmd(r *sftp.Request) error {
 	if !h.canWrite() {
 		return sftp.ErrSSHFxPermissionDenied
 	}
-	root := h.s.root
+	root := h.s.fs
 	switch r.Method {
 	case "Mkdir":
 		return mapErr(root.Mkdir(rel(r.Filepath), 0o755))
@@ -161,22 +161,16 @@ func (h *shareHandlers) Filecmd(r *sftp.Request) error {
 
 // Filelist handles List / Stat / Readlink.
 func (h *shareHandlers) Filelist(r *sftp.Request) (sftp.ListerAt, error) {
-	root := h.s.root
+	root := h.s.fs
 	p := rel(r.Filepath)
 	switch r.Method {
 	case "List":
 		if !h.canRead() {
 			return nil, sftp.ErrSSHFxPermissionDenied
 		}
-		entries, err := fs.ReadDir(root.FS(), p)
+		infos, err := root.ReadDir(p)
 		if err != nil {
 			return nil, mapErr(err)
-		}
-		infos := make([]os.FileInfo, 0, len(entries))
-		for _, e := range entries {
-			if fi, err := e.Info(); err == nil {
-				infos = append(infos, fi)
-			}
 		}
 		return listerAt(infos), nil
 	case "Stat", "Lstat":
@@ -218,7 +212,7 @@ func mapErr(err error) error {
 		return nil
 	case os.IsNotExist(err):
 		return sftp.ErrSSHFxNoSuchFile
-	case os.IsPermission(err):
+	case os.IsPermission(err), errors.Is(err, errReadOnly):
 		return sftp.ErrSSHFxPermissionDenied
 	}
 	return err

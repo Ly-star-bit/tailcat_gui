@@ -157,6 +157,19 @@ func (c *Client) uploadFile(ctx context.Context, local, remote string, size int6
 // Download copies a remote file or directory tree into localDir.
 func (c *Client) Download(ctx context.Context, remote, localDir string, progress func(Progress)) error {
 	remote = path.Clean(remote)
+	if remote == "." || remote == "/" || remote == "" {
+		// "Everything": fetch each top-level entry into localDir directly.
+		entries, err := c.List(".")
+		if err != nil {
+			return err
+		}
+		for _, e := range entries {
+			if err := c.Download(ctx, e.Name, localDir, progress); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
 	st, err := c.sftp.Stat(remote)
 	if err != nil {
 		return err

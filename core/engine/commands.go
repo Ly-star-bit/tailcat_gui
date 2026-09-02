@@ -71,6 +71,12 @@ type StartServerArgs struct {
 	Files    *FilesSpec `json:"files"`     // SFTP share on port 22
 	SSH      bool       `json:"ssh"`       // no-auth SSH shell on port 22 (desktop only)
 	Key      string     `json:"key"`       // "" | "new" | saved key name (reserved)
+
+	// SharePaths serves these files/folders read-only on port 22 ("send
+	// these files"). Mutually exclusive with Files.
+	SharePaths []string `json:"share_paths"`
+	// Name is the device name shown to the other side (default: hostname).
+	Name string `json:"name"`
 }
 
 // StartForwardArgs: listen locally, forward each connection to the server's remote_port.
@@ -173,6 +179,12 @@ func (e *Engine) dispatch(req Request) (any, error) {
 			return nil, err
 		}
 		return e.ping(a)
+	case "probe":
+		var a TokenArgs
+		if err := decode(req.Args, &a); err != nil {
+			return nil, err
+		}
+		return e.probe(a)
 	case "start_server":
 		var a StartServerArgs
 		if err := decode(req.Args, &a); err != nil {

@@ -7,8 +7,10 @@ import (
 	"net"
 	"runtime"
 	"strconv"
+	"time"
 
 	"github.com/tailscale/tailcat"
+	"tailscale.com/ipn/ipnstate"
 )
 
 // startForward listens on a local TCP port and forwards every accepted
@@ -102,8 +104,12 @@ func acceptLoop(s *Session, ln net.Listener, handle func(net.Conn)) {
 // works, then keeps probing the path (DERP vs direct).
 func clientWarmup(s *Session, cl *tailcat.Client) {
 	s.setState(StateStarting, "connecting")
-	ctx, cancel := context.WithTimeout(s.Context(), 20e9)
-	pr, err := cl.DiscoPing(ctx)
+	ctx, cancel := context.WithTimeout(s.Context(), 30*time.Second)
+	err := warmClient(ctx, cl, s.logf)
+	var pr *ipnstate.PingResult
+	if err == nil {
+		pr, err = cl.DiscoPing(ctx)
+	}
 	cancel()
 	if err != nil {
 		if s.Context().Err() != nil {

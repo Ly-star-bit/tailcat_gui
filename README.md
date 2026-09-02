@@ -19,12 +19,15 @@ Flutter UI (Dart)  ──dart:ffi──▶  libtailcat_core (Go, c-shared)  ─�
   - `start_socks`（= `tailcat socks --listen`）
   - `send_files` / `list_remote` / `download`（SFTP，与 `tailcat cp/ls/recv` 互通）
   - `start_ssh_forward`（桌面：本地端口转发到对方 22，再交给系统 `ssh`）
+  - `probe`（连接令牌后自动探测：先读服务端在 1 号端口发布的「清单」；对纯命令行服务端则探测 22 端口是否有 SFTP / shell）
+  - `start_server` 一个令牌可同时包含文件、端口、出口节点、SSH；`share_paths` 直接分享选中的文件
   - `ping` / `parse_token` / `stop` / `list_sessions` / `get_caps`
 - `core/engine/fileshare`：自研「仅 SFTP 子系统」的免认证 SSH 服务端 + 客户端。
   tailcat 内置的 SSH/SFTP 服务端在 Android 上不可用（build tag），这个包三端一致并带进度回调。
 - `core/bridge`：6 个 C 函数（`tc_init/tc_call/tc_poll/tc_free/tc_version/tc_shutdown`），见 `bridge.h`。
 - `app/packages/tailcat_core_ffi`：Flutter FFI 插件，打包预编译的 `.so/.dylib/.dll`。
-- `app/`：Flutter 应用（Riverpod）。
+- `app/`：Flutter 应用（Riverpod）。只有两个入口：**分享**（勾选文件/文件夹/端口/出口节点/SSH，生成一个令牌）
+  和 **连接**（粘贴或扫描令牌，自动显示对方提供了什么并给出操作）。剪贴板里有令牌会直接提示连接；记住最近连接过的设备。
 
 ## 构建（全部 headless，不会启动 GUI）
 
@@ -53,14 +56,16 @@ macOS 应用打包需要完整 Xcode（`flutter build macos`）；Windows 应用
 
 | GUI 操作 | 等价 CLI |
 |---|---|
-| 接收文件（生成令牌） | `tailcat recv ~/inbox` |
-| 发送文件（输入令牌） | `tailcat cp file tc…:` |
-| 共享文件夹 | `tailcat serve --files=DIR:ro files` |
-| 浏览并下载 | `tailcat ls -l tc…` / `tailcat cp tc…:file .` |
-| 共享端口 8080 | `tailcat serve 8080` |
-| 作为出口节点 | `tailcat serve exit-node` |
-| SOCKS5 代理 | `tailcat socks --listen 12000 tc…` |
-| 免密 SSH（桌面） | `tailcat serve no-auth-ssh` / `tailcat ssh tc…` |
+| 分享 → 发送文件（生成令牌） | 无直接等价；CLI 用 `tailcat cp tc…:file .` 可取回 |
+| 分享 → 接收文件 | `tailcat recv ~/inbox`（CLI 用 `tailcat cp file tc…:` 发送） |
+| 分享 → 共享文件夹 | `tailcat serve --files=DIR:ro files` |
+| 分享 → 端口 / 所有端口 / 出口节点 / SSH | `tailcat serve 8080` / `all` / `exit-node` / `no-auth-ssh` |
+| 连接 → 全部接收 / 浏览 | `tailcat cp tc…:. .` / `tailcat ls -l tc…` |
+| 连接 → 映射端口到本机 | 无 CLI 等价（CLI 只有 stdin/stdout 管道） |
+| 连接 → SOCKS5 | `tailcat socks --listen 1080 tc…` |
+| 连接 → SSH 登录（桌面） | `tailcat ssh tc…` |
+
+连接命令行起的服务端时没有清单，App 会探测 22 端口并允许手动填端口号映射。
 
 ## 注意
 

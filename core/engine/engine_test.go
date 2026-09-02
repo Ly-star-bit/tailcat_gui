@@ -271,6 +271,62 @@ func TestE2EFiles(t *testing.T) {
 	mustOK(t, e, "stop", SessionArgs{SessionID: srv["session_id"].(string)})
 }
 
+func TestE2EProbeAndSendShare(t *testing.T) {
+	e := e2e(t)
+	src := t.TempDir()
+	os.WriteFile(filepath.Join(src, "photo.jpg"), []byte("jpeg!"), 0o644)
+	os.WriteFile(filepath.Join(src, "notes.txt"), []byte("notes"), 0o644)
+
+	srv := mustOK(t, e, "start_server", StartServerArgs{
+		SharePaths: []string{filepath.Join(src, "photo.jpg"), filepath.Join(src, "notes.txt")},
+		Ports:      []int{8080}, Name: "my-laptop",
+	})
+	token := waitToken(t, e, srv["session_id"].(string))
+
+	res := mustOK(t, e, "probe", TokenArgs{Token: token})
+	t.Logf("probe: %v", res)
+	if res["reachable"] != true || res["cli_fallback"] == true {
+		t.Fatalf("probe = %v", res)
+	}
+	m := res["manifest"].(map[string]any)
+	if m["name"] != "my-laptop" || m["app"] != "tailcat-gui" {
+		t.Fatalf("manifest = %v", m)
+	}
+	files := m["files"].(map[string]any)
+	if files["mode"] != "ro" || len(files["items"].([]any)) != 2 {
+		t.Fatalf("manifest files = %v", files)
+	}
+	if ports := m["ports"].([]any); len(ports) != 1 || ports[0].(float64) != 8080 {
+		t.Fatalf("manifest ports = %v", ports)
+	}
+
+	// Receive everything with remote path ".".
+	down := t.TempDir()
+	dl := mustOK(t, e, "download", DownloadArgs{Token: token, RemotePaths: []string{"."}, LocalDir: down})
+	waitEvent(t, e, 120*time.Second, func(ev Event) bool {
+		if ev["session_id"] == dl["session_id"] && ev["type"] == EvSessionState && ev["state"] == string(StateFailed) {
+			t.Fatalf("download failed: %v", ev["detail"])
+		}
+		return ev["session_id"] == dl["session_id"] && ev["type"] == EvSessionState && ev["state"] == string(StateDone)
+	})
+	if b, _ := os.ReadFile(filepath.Join(down, "photo.jpg")); string(b) != "jpeg!" {
+		t.Fatalf("photo.jpg = %q", b)
+	}
+	if b, _ := os.ReadFile(filepath.Join(down, "notes.txt")); string(b) != "notes" {
+		t.Fatalf("notes.txt = %q", b)
+	}
+	mustOK(t, e, "stop", SessionArgs{SessionID: srv["session_id"].(string)})
+
+	// A plain drop box (no manifest would be the CLI case; here we still
+	// publish one) reports files mode wo, so the UI offers "send".
+	srv2 := mustOK(t, e, "start_server", StartServerArgs{Files: &FilesSpec{Dir: t.TempDir(), Mode: "wo"}})
+	token2 := waitToken(t, e, srv2["session_id"].(string))
+	res2 := mustOK(t, e, "probe", TokenArgs{Token: token2})
+	if res2["sftp"] != true || res2["sftp_list"] != false {
+		t.Fatalf("probe wo = %v", res2)
+	}
+}
+
 func httpGet(t *testing.T, url string, tr *http.Transport) string {
 	t.Helper()
 	c := &http.Client{Timeout: 60 * time.Second}

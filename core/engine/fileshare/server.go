@@ -18,7 +18,6 @@ import (
 	"encoding/binary"
 	"fmt"
 	"net"
-	"os"
 	"sync"
 
 	"github.com/pkg/sftp"
@@ -110,7 +109,7 @@ func (h Hooks) progress(p Progress) {
 
 // Server serves one directory over SFTP.
 type Server struct {
-	root  *os.Root
+	fs    backend
 	mode  Mode
 	hooks Hooks
 	cfg   *ssh.ServerConfig
@@ -124,24 +123,38 @@ type Server struct {
 // ed25519 host key. Clients ignore host keys, so a new key per server is
 // fine and keeps the package free of persistent state.
 func NewServer(dir string, mode Mode, hooks Hooks) (*Server, error) {
-	root, err := os.OpenRoot(dir)
+	b, err := newDirBackend(dir)
 	if err != nil {
 		return nil, err
 	}
+	return newServer(b, mode, hooks)
+}
+
+// NewPathsServer serves a picked set of files and folders read-only under a
+// virtual root, for "send these files" tokens. Entries lists what it offers.
+func NewPathsServer(paths []string, hooks Hooks) (*Server, error) {
+	b, err := newPathsBackend(paths)
+	if err != nil {
+		return nil, err
+	}
+	return newServer(b, ReadOnly, hooks)
+}
+
+func newServer(b backend, mode Mode, hooks Hooks) (*Server, error) {
 	_, priv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
-		root.Close()
+		b.Close()
 		return nil, err
 	}
 	signer, err := ssh.NewSignerFromKey(priv)
 	if err != nil {
-		root.Close()
+		b.Close()
 		return nil, err
 	}
 	cfg := &ssh.ServerConfig{NoClientAuth: true}
 	cfg.AddHostKey(signer)
 	return &Server{
-		root:  root,
+		fs:    b,
 		mode:  mode,
 		hooks: hooks,
 		cfg:   cfg,
@@ -151,6 +164,15 @@ func NewServer(dir string, mode Mode, hooks Hooks) (*Server, error) {
 
 // Mode returns the share mode.
 func (s *Server) Mode() Mode { return s.mode }
+
+// Entries lists the top-level items of a NewPathsServer share (nil for a
+// directory share).
+func (s *Server) Entries() []ShareItem {
+	if p, ok := s.fs.(*pathsBackend); ok {
+		return p.Entries()
+	}
+	return nil
+}
 
 // Handler returns a func suitable for tailcat.Server.OnTCP: it serves one
 // incoming connection as an SSH session offering only the sftp subsystem.
@@ -255,5 +277,5 @@ func (s *Server) Close() error {
 	for _, c := range conns {
 		c.Close()
 	}
-	return s.root.Close()
+	return s.fs.Close()
 }

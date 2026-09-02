@@ -1,38 +1,58 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../core/providers.dart';
-import '../platform/platform_caps.dart';
-import 'browse_screen.dart';
-import 'connect_port_screen.dart';
-import 'send_screen.dart';
+import '../core/recent.dart';
+import 'connect_screen.dart';
 import 'sessions_screen.dart';
-import 'share_folder_screen.dart';
-import 'share_port_screen.dart';
-import 'socks_screen.dart';
-import 'ssh_screen.dart';
+import 'share_screen.dart';
 
-class HomeScreen extends ConsumerWidget {
+/// Two things to do: share, or connect. Plus a clipboard shortcut and the
+/// peers you talked to before.
+class HomeScreen extends ConsumerStatefulWidget {
   const HomeScreen({super.key});
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<HomeScreen> createState() => _HomeScreenState();
+}
+
+class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObserver {
+  String? _clipboardToken;
+  String? _dismissedToken;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    _checkClipboard();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) _checkClipboard();
+  }
+
+  Future<void> _checkClipboard() async {
+    try {
+      final data = await Clipboard.getData(Clipboard.kTextPlain);
+      final text = data?.text?.trim() ?? '';
+      final token = text.replaceFirst('tailcat=', '');
+      final looksLikeToken = token.startsWith('tc') && token.length > 40 && !token.contains(' ');
+      if (!mounted) return;
+      setState(() => _clipboardToken = looksLikeToken && token != _dismissedToken ? token : null);
+    } catch (_) {}
+  }
+
+  void _push(Widget w) => Navigator.of(context).push(MaterialPageRoute(builder: (_) => w));
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final cs = theme.colorScheme;
     final active = ref.watch(activeSessionCountProvider);
     final caps = ref.watch(capsProvider).valueOrNull;
-    final sshServer = caps?.sshServer ?? false;
-
-    final actions = <_Action>[
-      _Action('接收文件', '生成令牌，让对方把文件发给我', Icons.download_rounded,
-          () => const ShareFolderScreen(mode: ShareFolderMode.receive)),
-      _Action('发送文件', '输入对方令牌，把文件发过去', Icons.upload_rounded, () => const SendScreen()),
-      _Action('共享文件夹', '生成令牌，让对方浏览并下载我的文件', Icons.folder_shared_outlined,
-          () => ShareFolderScreen(mode: ShareFolderMode.share, allowSsh: sshServer)),
-      _Action('浏览并下载', '输入对方令牌，取回对方共享的文件', Icons.folder_open_outlined, () => const BrowseScreen()),
-      _Action('共享端口', '把本机端口（如 8080）暴露给对方', Icons.lan_outlined, () => const SharePortScreen()),
-      _Action('连接端口', '在本机开一个端口，映射到对方端口', Icons.cable, () => const ConnectPortScreen()),
-      _Action('SOCKS5 代理', '通过对方的网络访问其内网或互联网', Icons.vpn_lock_outlined, () => const SocksScreen()),
-      if (PlatformCaps.hasSystemSsh) _Action('SSH 登录', '输入令牌，用系统 ssh 登录对方机器', Icons.terminal, () => const SshScreen()),
-    ];
+    final recents = ref.watch(recentPeersProvider);
 
     return Scaffold(
       appBar: AppBar(
@@ -40,30 +60,110 @@ class HomeScreen extends ConsumerWidget {
         actions: [
           IconButton(
             tooltip: '会话与日志',
-            icon: Badge(
-              isLabelVisible: active > 0,
-              label: Text('$active'),
-              child: const Icon(Icons.list_alt),
-            ),
-            onPressed: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const SessionsScreen())),
+            icon: Badge(isLabelVisible: active > 0, label: Text('$active'), child: const Icon(Icons.list_alt)),
+            onPressed: () => _push(const SessionsScreen()),
           ),
         ],
       ),
-      body: LayoutBuilder(
-        builder: (context, c) {
-          final cols = c.maxWidth > 900 ? 3 : c.maxWidth > 560 ? 2 : 1;
-          return GridView.builder(
-            padding: const EdgeInsets.all(16),
-            gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-              crossAxisCount: cols,
-              mainAxisExtent: 96,
-              crossAxisSpacing: 12,
-              mainAxisSpacing: 12,
+      body: ListView(
+        padding: const EdgeInsets.all(16),
+        children: [
+          if (_clipboardToken != null)
+            Card(
+              color: cs.tertiaryContainer,
+              child: ListTile(
+                leading: Icon(Icons.content_paste, color: cs.onTertiaryContainer),
+                title: Text('剪贴板里有一个令牌', style: TextStyle(color: cs.onTertiaryContainer)),
+                subtitle: Text(_short(_clipboardToken!), style: TextStyle(color: cs.onTertiaryContainer, fontFamily: 'monospace')),
+                trailing: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    FilledButton(
+                      onPressed: () => _push(ConnectScreen(initialToken: _clipboardToken, autoConnect: true)),
+                      child: const Text('连接'),
+                    ),
+                    IconButton(
+                      icon: const Icon(Icons.close),
+                      onPressed: () => setState(() {
+                        _dismissedToken = _clipboardToken;
+                        _clipboardToken = null;
+                      }),
+                    ),
+                  ],
+                ),
+              ),
             ),
-            itemCount: actions.length,
-            itemBuilder: (context, i) => _ActionCard(action: actions[i]),
-          );
-        },
+          const SizedBox(height: 8),
+          Row(
+            children: [
+              Expanded(
+                child: _BigButton(
+                  icon: Icons.ios_share,
+                  title: '分享',
+                  subtitle: '文件、文件夹、端口或网络\n生成一个令牌给对方',
+                  onTap: () => _push(const ShareScreen()),
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: _BigButton(
+                  icon: Icons.link,
+                  title: '连接',
+                  subtitle: '输入或扫描对方的令牌\n自动显示能做什么',
+                  onTap: () => _push(const ConnectScreen()),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          Wrap(
+            spacing: 8,
+            children: [
+              ActionChip(
+                avatar: const Icon(Icons.upload_rounded, size: 18),
+                label: const Text('发送文件'),
+                onPressed: () => _push(const ShareScreen(initialFileMode: 'send')),
+              ),
+              ActionChip(
+                avatar: const Icon(Icons.download_rounded, size: 18),
+                label: const Text('接收文件'),
+                onPressed: () => _push(const ShareScreen(initialFileMode: 'receive')),
+              ),
+              ActionChip(
+                avatar: const Icon(Icons.folder_shared_outlined, size: 18),
+                label: const Text('共享文件夹'),
+                onPressed: () => _push(const ShareScreen(initialFileMode: 'folder')),
+              ),
+            ],
+          ),
+          if (recents.isNotEmpty) ...[
+            const SizedBox(height: 24),
+            Text('最近连接', style: theme.textTheme.titleMedium),
+            const SizedBox(height: 4),
+            for (final r in recents.take(8))
+              ListTile(
+                contentPadding: EdgeInsets.zero,
+                leading: const Icon(Icons.history),
+                title: Text(r.label),
+                subtitle: Text('${_short(r.token)} · ${_ago(r.lastMs)}', style: theme.textTheme.bodySmall),
+                trailing: PopupMenuButton<String>(
+                  onSelected: (v) async {
+                    if (v == 'rename') {
+                      final alias = await _askAlias(context, r.label);
+                      if (alias != null) ref.read(recentPeersProvider.notifier).rename(r.token, alias);
+                    } else if (v == 'remove') {
+                      ref.read(recentPeersProvider.notifier).remove(r.token);
+                    }
+                  },
+                  itemBuilder: (_) => const [
+                    PopupMenuItem(value: 'rename', child: Text('重命名')),
+                    PopupMenuItem(value: 'remove', child: Text('删除')),
+                  ],
+                ),
+                onTap: () => _push(ConnectScreen(initialToken: r.token, autoConnect: true)),
+              ),
+          ],
+        ],
       ),
       bottomNavigationBar: caps == null
           ? null
@@ -72,49 +172,69 @@ class HomeScreen extends ConsumerWidget {
               child: Text(
                 'core ${caps.version} · tailcat ${caps.tailcat} · ${caps.platform}/${caps.arch}',
                 textAlign: TextAlign.center,
-                style: Theme.of(context).textTheme.bodySmall,
+                style: theme.textTheme.bodySmall,
               ),
             ),
     );
   }
+
+  static String _short(String t) => t.length <= 24 ? t : '${t.substring(0, 12)}…${t.substring(t.length - 8)}';
+
+  static String _ago(int ms) {
+    final d = DateTime.now().difference(DateTime.fromMillisecondsSinceEpoch(ms));
+    if (d.inMinutes < 1) return '刚刚';
+    if (d.inHours < 1) return '${d.inMinutes} 分钟前';
+    if (d.inDays < 1) return '${d.inHours} 小时前';
+    return '${d.inDays} 天前';
+  }
+
+  Future<String?> _askAlias(BuildContext context, String current) {
+    final c = TextEditingController(text: current);
+    return showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('重命名'),
+        content: TextField(controller: c, autofocus: true),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('取消')),
+          FilledButton(onPressed: () => Navigator.pop(ctx, c.text.trim()), child: const Text('保存')),
+        ],
+      ),
+    );
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
 }
 
-class _Action {
-  const _Action(this.title, this.subtitle, this.icon, this.build);
+class _BigButton extends StatelessWidget {
+  const _BigButton({required this.icon, required this.title, required this.subtitle, required this.onTap});
+  final IconData icon;
   final String title;
   final String subtitle;
-  final IconData icon;
-  final Widget Function() build;
-}
-
-class _ActionCard extends StatelessWidget {
-  const _ActionCard({required this.action});
-  final _Action action;
+  final VoidCallback onTap;
 
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
     return Card(
       clipBehavior: Clip.antiAlias,
+      color: cs.primaryContainer,
       child: InkWell(
-        onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => action.build())),
+        onTap: onTap,
         child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-          child: Row(
+          padding: const EdgeInsets.all(20),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              CircleAvatar(backgroundColor: cs.primaryContainer, child: Icon(action.icon, color: cs.onPrimaryContainer)),
-              const SizedBox(width: 16),
-              Expanded(
-                child: Column(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(action.title, style: Theme.of(context).textTheme.titleMedium),
-                    Text(action.subtitle, style: Theme.of(context).textTheme.bodySmall, maxLines: 2, overflow: TextOverflow.ellipsis),
-                  ],
-                ),
-              ),
-              const Icon(Icons.chevron_right),
+              Icon(icon, size: 36, color: cs.onPrimaryContainer),
+              const SizedBox(height: 12),
+              Text(title, style: Theme.of(context).textTheme.headlineSmall?.copyWith(color: cs.onPrimaryContainer)),
+              const SizedBox(height: 4),
+              Text(subtitle, style: Theme.of(context).textTheme.bodySmall?.copyWith(color: cs.onPrimaryContainer)),
             ],
           ),
         ),
