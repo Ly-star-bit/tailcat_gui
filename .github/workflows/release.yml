@@ -1,0 +1,110 @@
+# Tag a commit (e.g. `git tag v0.1.0 && git push origin v0.1.0`) and this
+# builds all three apps and attaches them to a GitHub Release, so anyone can
+# download them from the Releases page without logging in.
+name: release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  native-libs:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: core/go.mod
+      - run: brew install mingw-w64
+      - run: bash build/build_macos.sh && bash build/build_windows.sh && bash build/build_android.sh
+        env:
+          ANDROID_NDK_HOME: ${{ env.ANDROID_NDK_LATEST_HOME }}
+          VERSION: ${{ github.ref_name }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: native-libs
+          path: build/out
+
+  android:
+    needs: native-libs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: native-libs
+          path: build/out
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+      - run: bash build/sync_libs.sh
+      - run: cd app && flutter pub get && flutter build apk --release --target-platform android-arm64
+      - run: cp app/build/app/outputs/flutter-apk/app-release.apk tailcat-${{ github.ref_name }}-android-arm64.apk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-android
+          path: tailcat-*.apk
+
+  macos:
+    needs: native-libs
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: native-libs
+          path: build/out
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+      - run: bash build/sync_libs.sh
+      - run: cd app && flutter pub get && flutter build macos --release
+      - run: cd app/build/macos/Build/Products/Release && ditto -c -k --keepParent tailcat_gui.app "$GITHUB_WORKSPACE/tailcat-${{ github.ref_name }}-macos.zip"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-macos
+          path: tailcat-*-macos.zip
+
+  windows:
+    needs: native-libs
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: native-libs
+          path: build/out
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+      - run: bash build/sync_libs.sh
+        shell: bash
+      - run: cd app && flutter pub get && flutter build windows --release
+      - run: Compress-Archive -Path app/build/windows/x64/runner/Release/* -DestinationPath tailcat-${{ github.ref_name }}-windows-x64.zip
+        shell: pwsh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-windows
+          path: tailcat-*-windows-x64.zip
+
+  publish:
+    needs: [android, macos, windows]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          merge-multiple: true
+          path: dist
+      - run: cd dist && sha256sum * > SHA256SUMS.txt && cat SHA256SUMS.txt
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true
