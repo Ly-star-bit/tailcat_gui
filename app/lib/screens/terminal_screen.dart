@@ -3,13 +3,53 @@ import 'dart:convert';
 
 import 'package:dartssh2/dartssh2.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:xterm/xterm.dart';
 
 import '../core/engine.dart';
 import '../core/models.dart';
 import '../core/providers.dart';
 import '../util/errors.dart';
+
+/// Tokyo Night, a dark palette that stays readable at small sizes on a
+/// phone screen while keeping the 16 ANSI colours distinguishable.
+const _bg = Color(0xFF1A1B26);
+const _surface = Color(0xFF20222F);
+const _border = Color(0xFF2C2E40);
+const _fg = Color(0xFFC0CAF5);
+const _dim = Color(0xFF7A85B0);
+const _accent = Color(0xFF7AA2F7);
+const _keyBg = Color(0xFF2A2D3E);
+
+const _terminalTheme = TerminalTheme(
+  cursor: Color(0xFFC0CAF5),
+  selection: Color(0x8033467C),
+  foreground: _fg,
+  background: _bg,
+  black: Color(0xFF15161E),
+  red: Color(0xFFF7768E),
+  green: Color(0xFF9ECE6A),
+  yellow: Color(0xFFE0AF68),
+  blue: Color(0xFF7AA2F7),
+  magenta: Color(0xFFBB9AF7),
+  cyan: Color(0xFF7DCFFF),
+  white: Color(0xFFA9B1D6),
+  brightBlack: Color(0xFF414868),
+  brightRed: Color(0xFFF7768E),
+  brightGreen: Color(0xFF9ECE6A),
+  brightYellow: Color(0xFFE0AF68),
+  brightBlue: Color(0xFF7AA2F7),
+  brightMagenta: Color(0xFFBB9AF7),
+  brightCyan: Color(0xFF7DCFFF),
+  brightWhite: Color(0xFFC0CAF5),
+  searchHitBackground: Color(0xFFE0AF68),
+  searchHitBackgroundCurrent: Color(0xFFFF9E64),
+  searchHitForeground: Color(0xFF15161E),
+);
+
+enum _Phase { connecting, connected, failed, finished }
 
 /// An in-app SSH terminal.
 ///
@@ -35,17 +75,23 @@ class TerminalScreen extends ConsumerStatefulWidget {
 }
 
 class _TerminalScreenState extends ConsumerState<TerminalScreen> {
+  static const _fontSizeKey = 'terminal_font_size';
+  static const _minFont = 9.0;
+  static const _maxFont = 22.0;
+
   late final _keys = TerminalStickyModifiers(defaultInputHandler, onChanged: () => setState(() {}));
+  late final _terminal = Terminal(maxLines: 6000, inputHandler: _keys);
+  final _controller = TerminalController();
   late final Engine _engine;
-  late final _terminal = Terminal(maxLines: 4000, inputHandler: _keys);
 
   SSHClient? _client;
   SSHSession? _session;
   StreamSubscription<EngineEvent>? _engineEvents;
+
   String _title = '';
-  String? _error;
-  bool _connected = false;
-  bool _finished = false;
+  String _remoteTitle = '';
+  _Phase _phase = _Phase.connecting;
+  double _fontSize = 13;
 
   @override
   void initState() {
@@ -57,17 +103,42 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
     _engineEvents = _engine.events.listen((ev) {
       if (ev.sessionId != widget.sessionId) return;
       if (ev is ErrorEvent) {
-        _terminal.write('\r\n\x1b[31m${friendlyError(EngineException(ev.code, ev.message))}\x1b[0m\r\n');
+        _writeNotice(friendlyError(EngineException(ev.code, ev.message)), error: true);
       } else if (ev is LogEvent && ev.level != 'debug') {
-        _terminal.write('\x1b[90m${ev.msg}\x1b[0m\r\n');
+        _writeNotice(ev.msg);
       }
     });
     _title = widget.title;
+    _loadFontSize();
     _connect();
   }
 
+  Future<void> _loadFontSize() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final v = prefs.getDouble(_fontSizeKey);
+      if (v != null && mounted) setState(() => _fontSize = v.clamp(_minFont, _maxFont));
+    } catch (_) {}
+  }
+
+  Future<void> _setFontSize(double v) async {
+    setState(() => _fontSize = v.clamp(_minFont, _maxFont));
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setDouble(_fontSizeKey, _fontSize);
+    } catch (_) {}
+  }
+
+  /// Writes an app message into the scrollback, visually distinct from
+  /// whatever the remote shell prints.
+  void _writeNotice(String msg, {bool error = false}) {
+    final color = error ? '\x1b[38;2;247;118;142m' : '\x1b[38;2;122;133;176m';
+    _terminal.write('\r\n$color❯ $msg\x1b[0m\r\n');
+  }
+
   Future<void> _connect() async {
-    _terminal.write('正在连接 127.0.0.1:${widget.localPort} …\r\n');
+    setState(() => _phase = _Phase.connecting);
+    _writeNotice('正在连接 127.0.0.1:${widget.localPort}');
     try {
       final socket = await SSHSocket.connect(
         '127.0.0.1',
@@ -96,33 +167,63 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
       _terminal.onOutput = (data) => session.write(utf8.encode(data));
       _terminal.onResize = (w, h, pw, ph) => session.resizeTerminal(w, h, pw, ph);
       _terminal.onTitleChange = (t) {
-        if (mounted && t.isNotEmpty) setState(() => _title = t);
+        if (mounted && t.isNotEmpty) setState(() => _remoteTitle = t);
       };
       const decoder = Utf8Decoder(allowMalformed: true);
       session.stdout.cast<List<int>>().transform(decoder).listen(_terminal.write);
       session.stderr.cast<List<int>>().transform(decoder).listen(_terminal.write);
       unawaited(session.done.whenComplete(() {
         if (!mounted) return;
-        _terminal.write('\r\n\x1b[90m[会话已结束]\x1b[0m\r\n');
-        setState(() => _finished = true);
+        _writeNotice('会话已结束');
+        setState(() => _phase = _Phase.finished);
       }));
 
-      setState(() => _connected = true);
+      setState(() => _phase = _Phase.connected);
     } catch (e) {
       if (!mounted) return;
-      setState(() => _error = friendlyError(e));
-      _terminal.write('\r\n\x1b[31m${friendlyError(e)}\x1b[0m\r\n');
+      _writeNotice(friendlyError(e), error: true);
+      setState(() => _phase = _Phase.failed);
     }
+  }
+
+  void _reconnect() {
+    _session?.close();
+    _client?.close();
+    _session = null;
+    _client = null;
+    _terminal.buffer.clear();
+    _terminal.buffer.setCursor(0, 0);
+    _connect();
   }
 
   /// Sends a raw control byte, e.g. 3 for Ctrl-C.
   void _sendCtrl(int code) => _terminal.textInput(String.fromCharCode(code));
+
+  Future<void> _paste() async {
+    final data = await Clipboard.getData(Clipboard.kTextPlain);
+    final text = data?.text;
+    if (text != null && text.isNotEmpty) _terminal.paste(text);
+  }
+
+  Future<void> _copySelection() async {
+    final range = _controller.selection;
+    if (range == null) return;
+    final text = _terminal.buffer.getText(range);
+    _controller.clearSelection();
+    if (text.isEmpty) return;
+    final messenger = ScaffoldMessenger.of(context);
+    await Clipboard.setData(ClipboardData(text: text));
+    messenger.showSnackBar(
+      const SnackBar(content: Text('已复制'), duration: Duration(seconds: 1)),
+    );
+  }
 
   @override
   void dispose() {
     _engineEvents?.cancel();
     _session?.close();
     _client?.close();
+    _controller.dispose();
     // The forward exists only for this terminal; free the local port.
     unawaited(_engine.stop(widget.sessionId).catchError((_) {}));
     super.dispose();
@@ -130,47 +231,268 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    return Scaffold(
-      backgroundColor: const Color(0xFF12131A),
-      appBar: AppBar(
-        title: Text(_title, overflow: TextOverflow.ellipsis),
-        actions: [
-          if (_finished)
-            IconButton(
-              tooltip: '重新连接',
-              icon: const Icon(Icons.refresh),
-              onPressed: () {
-                setState(() {
-                  _finished = false;
-                  _connected = false;
-                  _error = null;
-                });
-                _terminal.buffer.clear();
-                _connect();
-              },
+    final base = ThemeData.dark(useMaterial3: true);
+    return Theme(
+      data: base.copyWith(
+        scaffoldBackgroundColor: _bg,
+        colorScheme: base.colorScheme.copyWith(primary: _accent, surface: _surface),
+      ),
+      child: Scaffold(
+        backgroundColor: _bg,
+        appBar: _buildAppBar(),
+        body: SafeArea(
+          top: false,
+          child: Column(
+            children: [
+              Expanded(
+                child: TerminalView(
+                  _terminal,
+                  controller: _controller,
+                  theme: _terminalTheme,
+                  textStyle: TerminalStyle(fontSize: _fontSize, height: 1.25),
+                  padding: const EdgeInsets.fromLTRB(10, 8, 10, 8),
+                  autofocus: true,
+                  backgroundOpacity: 0,
+                ),
+              ),
+              _buildBottomBar(),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  PreferredSizeWidget _buildAppBar() {
+    final (dotColor, statusText) = switch (_phase) {
+      _Phase.connecting => (const Color(0xFFE0AF68), '正在连接'),
+      _Phase.connected => (const Color(0xFF9ECE6A), '已连接 · tailcat@127.0.0.1:${widget.localPort}'),
+      _Phase.failed => (const Color(0xFFF7768E), '连接失败'),
+      _Phase.finished => (_dim, '会话已结束'),
+    };
+    return AppBar(
+      backgroundColor: _surface,
+      surfaceTintColor: Colors.transparent,
+      elevation: 0,
+      titleSpacing: 8,
+      iconTheme: const IconThemeData(color: _fg),
+      shape: const Border(bottom: BorderSide(color: _border)),
+      title: Row(
+        children: [
+          Container(
+            width: 8,
+            height: 8,
+            margin: const EdgeInsets.only(right: 10),
+            decoration: BoxDecoration(
+              color: dotColor,
+              shape: BoxShape.circle,
+              boxShadow: [BoxShadow(color: dotColor.withValues(alpha: 0.5), blurRadius: 6)],
             ),
+          ),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  _remoteTitle.isNotEmpty ? _remoteTitle : _title,
+                  style: const TextStyle(color: _fg, fontSize: 15, fontWeight: FontWeight.w600),
+                  overflow: TextOverflow.ellipsis,
+                ),
+                Text(
+                  statusText,
+                  style: const TextStyle(color: _dim, fontSize: 11),
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ],
+            ),
+          ),
         ],
       ),
-      body: SafeArea(
-        child: Column(
-          children: [
-            if (_error != null)
-              Container(
-                width: double.infinity,
-                color: theme.colorScheme.errorContainer,
-                padding: const EdgeInsets.all(8),
-                child: Text(_error!, style: TextStyle(color: theme.colorScheme.onErrorContainer)),
-              ),
-            Expanded(
-              child: TerminalView(
-                _terminal,
-                autofocus: true,
-                backgroundOpacity: 0,
-                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-              ),
+      actions: [
+        if (_phase == _Phase.finished || _phase == _Phase.failed)
+          IconButton(
+            tooltip: '重新连接',
+            icon: const Icon(Icons.refresh, color: _fg),
+            onPressed: _reconnect,
+          ),
+        PopupMenuButton<String>(
+          tooltip: '更多',
+          icon: const Icon(Icons.more_vert, color: _fg),
+          color: _surface,
+          onSelected: (v) {
+            switch (v) {
+              case 'bigger':
+                _setFontSize(_fontSize + 1);
+              case 'smaller':
+                _setFontSize(_fontSize - 1);
+              case 'clear':
+                _terminal.buffer.clear();
+                _terminal.buffer.setCursor(0, 0);
+              case 'paste':
+                _paste();
+            }
+          },
+          itemBuilder: (_) => [
+            PopupMenuItem(
+              value: 'bigger',
+              enabled: _fontSize < _maxFont,
+              child: const _MenuRow(icon: Icons.text_increase, label: '字号放大'),
             ),
-            if (_connected) _KeyBar(keys: _keys, terminal: _terminal, sendCtrl: _sendCtrl),
+            PopupMenuItem(
+              value: 'smaller',
+              enabled: _fontSize > _minFont,
+              child: const _MenuRow(icon: Icons.text_decrease, label: '字号缩小'),
+            ),
+            const PopupMenuItem(value: 'paste', child: _MenuRow(icon: Icons.content_paste, label: '粘贴')),
+            const PopupMenuItem(value: 'clear', child: _MenuRow(icon: Icons.cleaning_services_outlined, label: '清屏')),
+          ],
+        ),
+      ],
+    );
+  }
+
+  Widget _buildBottomBar() {
+    if (_phase == _Phase.failed) {
+      return _BottomStrip(
+        child: Row(
+          children: [
+            const Expanded(
+              child: Text('连接失败，可以重试', style: TextStyle(color: _dim, fontSize: 13)),
+            ),
+            FilledButton.icon(
+              style: FilledButton.styleFrom(backgroundColor: _accent, foregroundColor: _bg),
+              icon: const Icon(Icons.refresh, size: 18),
+              label: const Text('重新连接'),
+              onPressed: _reconnect,
+            ),
+          ],
+        ),
+      );
+    }
+    if (_phase != _Phase.connected) return const SizedBox.shrink();
+
+    // When text is selected, the key bar makes way for a copy action.
+    return AnimatedBuilder(
+      animation: _controller,
+      builder: (context, _) {
+        if (_controller.selection != null) {
+          return _BottomStrip(
+            child: Row(
+              children: [
+                const Expanded(child: Text('已选中文本', style: TextStyle(color: _dim, fontSize: 13))),
+                TextButton(
+                  onPressed: _controller.clearSelection,
+                  child: const Text('取消', style: TextStyle(color: _dim)),
+                ),
+                const SizedBox(width: 4),
+                FilledButton.icon(
+                  style: FilledButton.styleFrom(backgroundColor: _accent, foregroundColor: _bg),
+                  icon: const Icon(Icons.copy, size: 18),
+                  label: const Text('复制'),
+                  onPressed: _copySelection,
+                ),
+              ],
+            ),
+          );
+        }
+        return TerminalKeyBar(
+          keys: _keys,
+          terminal: _terminal,
+          sendCtrl: _sendCtrl,
+          onPaste: _paste,
+        );
+      },
+    );
+  }
+}
+
+class _MenuRow extends StatelessWidget {
+  const _MenuRow({required this.icon, required this.label});
+  final IconData icon;
+  final String label;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      children: [
+        Icon(icon, size: 18, color: _fg),
+        const SizedBox(width: 12),
+        Text(label, style: const TextStyle(color: _fg)),
+      ],
+    );
+  }
+}
+
+class _BottomStrip extends StatelessWidget {
+  const _BottomStrip({required this.child});
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      decoration: const BoxDecoration(
+        color: _surface,
+        border: Border(top: BorderSide(color: _border)),
+      ),
+      padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
+      child: child,
+    );
+  }
+}
+
+/// The keys a soft keyboard does not offer, grouped: modifiers, common
+/// control codes, navigation, then punctuation that is buried on phone
+/// keyboards.
+class TerminalKeyBar extends StatelessWidget {
+  const TerminalKeyBar({
+    super.key,
+    required this.keys,
+    required this.terminal,
+    required this.sendCtrl,
+    required this.onPaste,
+  });
+
+  final TerminalStickyModifiers keys;
+  final Terminal terminal;
+  final void Function(int code) sendCtrl;
+  final VoidCallback onPaste;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      decoration: const BoxDecoration(
+        color: _surface,
+        border: Border(top: BorderSide(color: _border)),
+      ),
+      padding: const EdgeInsets.symmetric(vertical: 6),
+      child: SizedBox(
+        height: 36,
+        child: ListView(
+          scrollDirection: Axis.horizontal,
+          padding: const EdgeInsets.symmetric(horizontal: 8),
+          children: [
+            _Key(label: 'Ctrl', active: keys.ctrl, onTap: () => keys.ctrl = !keys.ctrl),
+            _Key(label: 'Alt', active: keys.alt, onTap: () => keys.alt = !keys.alt),
+            _Key(label: 'Esc', onTap: () => terminal.keyInput(TerminalKey.escape)),
+            _Key(label: 'Tab', onTap: () => terminal.keyInput(TerminalKey.tab)),
+            const _KeyDivider(),
+            _Key(label: '^C', onTap: () => sendCtrl(3)),
+            _Key(label: '^D', onTap: () => sendCtrl(4)),
+            _Key(label: '^Z', onTap: () => sendCtrl(26)),
+            _Key(label: '^L', onTap: () => sendCtrl(12)),
+            const _KeyDivider(),
+            _Key(icon: Icons.keyboard_arrow_up, onTap: () => terminal.keyInput(TerminalKey.arrowUp)),
+            _Key(icon: Icons.keyboard_arrow_down, onTap: () => terminal.keyInput(TerminalKey.arrowDown)),
+            _Key(icon: Icons.keyboard_arrow_left, onTap: () => terminal.keyInput(TerminalKey.arrowLeft)),
+            _Key(icon: Icons.keyboard_arrow_right, onTap: () => terminal.keyInput(TerminalKey.arrowRight)),
+            const _KeyDivider(),
+            _Key(label: '|', onTap: () => terminal.textInput('|')),
+            _Key(label: '~', onTap: () => terminal.textInput('~')),
+            _Key(label: '/', onTap: () => terminal.textInput('/')),
+            _Key(label: '-', onTap: () => terminal.textInput('-')),
+            const _KeyDivider(),
+            _Key(icon: Icons.content_paste, onTap: onPaste),
           ],
         ),
       ),
@@ -178,75 +500,55 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
   }
 }
 
-/// Keys a soft keyboard does not offer: Esc, Tab, Ctrl and the arrows.
-class _KeyBar extends StatelessWidget {
-  const _KeyBar({required this.keys, required this.terminal, required this.sendCtrl});
-
-  final TerminalStickyModifiers keys;
-  final Terminal terminal;
-  final void Function(int code) sendCtrl;
+class _KeyDivider extends StatelessWidget {
+  const _KeyDivider();
 
   @override
   Widget build(BuildContext context) {
-    return Material(
-      color: const Color(0xFF1D1F29),
-      child: SizedBox(
-        height: 44,
-        child: ListView(
-          scrollDirection: Axis.horizontal,
-          padding: const EdgeInsets.symmetric(horizontal: 4),
-          children: [
-            _key('Esc', onTap: () => terminal.keyInput(TerminalKey.escape)),
-            _key('Tab', onTap: () => terminal.keyInput(TerminalKey.tab)),
-            _key('Ctrl', active: keys.ctrl, onTap: () => keys.ctrl = !keys.ctrl),
-            _key('Alt', active: keys.alt, onTap: () => keys.alt = !keys.alt),
-            _key('^C', onTap: () => sendCtrl(3)),
-            _key('^D', onTap: () => sendCtrl(4)),
-            _key('^Z', onTap: () => sendCtrl(26)),
-            _key('^L', onTap: () => sendCtrl(12)),
-            _iconKey(Icons.arrow_upward, () => terminal.keyInput(TerminalKey.arrowUp)),
-            _iconKey(Icons.arrow_downward, () => terminal.keyInput(TerminalKey.arrowDown)),
-            _iconKey(Icons.arrow_back, () => terminal.keyInput(TerminalKey.arrowLeft)),
-            _iconKey(Icons.arrow_forward, () => terminal.keyInput(TerminalKey.arrowRight)),
-            _key('|', onTap: () => terminal.textInput('|')),
-            _key('~', onTap: () => terminal.textInput('~')),
-            _key('/', onTap: () => terminal.textInput('/')),
-            _key('-', onTap: () => terminal.textInput('-')),
-          ],
-        ),
-      ),
+    return Container(
+      width: 1,
+      height: 18,
+      margin: const EdgeInsets.symmetric(horizontal: 8, vertical: 9),
+      color: _border,
     );
   }
+}
 
-  Widget _key(String label, {required VoidCallback onTap, bool active = false}) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 2, vertical: 6),
-      child: TextButton(
-        style: TextButton.styleFrom(
-          minimumSize: const Size(44, 32),
-          padding: const EdgeInsets.symmetric(horizontal: 10),
-          backgroundColor: active ? Colors.white24 : Colors.white10,
-          foregroundColor: Colors.white,
-          textStyle: const TextStyle(fontFamily: 'monospace', fontSize: 13),
-        ),
-        onPressed: onTap,
-        child: Text(label),
-      ),
-    );
-  }
+class _Key extends StatelessWidget {
+  const _Key({this.label, this.icon, required this.onTap, this.active = false});
 
-  Widget _iconKey(IconData icon, VoidCallback onTap) {
+  final String? label;
+  final IconData? icon;
+  final VoidCallback onTap;
+  final bool active;
+
+  @override
+  Widget build(BuildContext context) {
     return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 2, vertical: 6),
-      child: TextButton(
-        style: TextButton.styleFrom(
-          minimumSize: const Size(44, 32),
-          padding: EdgeInsets.zero,
-          backgroundColor: Colors.white10,
-          foregroundColor: Colors.white,
+      padding: const EdgeInsets.symmetric(horizontal: 3),
+      child: Material(
+        color: active ? _accent : _keyBg,
+        borderRadius: BorderRadius.circular(8),
+        child: InkWell(
+          borderRadius: BorderRadius.circular(8),
+          onTap: onTap,
+          child: Container(
+            constraints: const BoxConstraints(minWidth: 42),
+            alignment: Alignment.center,
+            padding: const EdgeInsets.symmetric(horizontal: 10),
+            child: icon != null
+                ? Icon(icon, size: 18, color: active ? _bg : _fg)
+                : Text(
+                    label!,
+                    style: TextStyle(
+                      color: active ? _bg : _fg,
+                      fontSize: 13,
+                      fontWeight: active ? FontWeight.w700 : FontWeight.w500,
+                      fontFamily: 'monospace',
+                    ),
+                  ),
+          ),
         ),
-        onPressed: onTap,
-        child: Icon(icon, size: 16),
       ),
     );
   }
